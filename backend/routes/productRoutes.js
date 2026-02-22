@@ -2,6 +2,7 @@ const express = require("express");
 const Product = require("../models/Product");
 const multer = require("multer");
 const path = require("path");
+const fs = require("fs");
 
 const router = express.Router();
 
@@ -41,7 +42,7 @@ router.post("/add", upload.single("image"), async (req, res) => {
 
     await newProduct.save();
 
-    res.json({ success: true });
+    res.json({ success: true, message: "Product added successfully" });
 
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -50,25 +51,47 @@ router.post("/add", upload.single("image"), async (req, res) => {
 
 
 // 🔍 SEARCH PRODUCT
+// 🔍 SEARCH PRODUCT
 router.get("/:code", async (req, res) => {
   try {
     const product = await Product.findOne({ code: req.params.code });
-    res.json(product);
+
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    if (product.stock === 0) {
+      return res.json({
+        ...product._doc,
+        status: "Out of Stock"
+      });
+    }
+
+    res.json({
+      ...product._doc,
+      status: "Available"
+    });
+
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }
 });
-
 
 // ➕ INCREASE STOCK
 router.put("/increase/:code", async (req, res) => {
   try {
-    await Product.updateOne(
-      { code: req.params.code },
-      { $inc: { stock: Number(req.body.qty) } }
-    );
+    const qty = Number(req.body.qty);
 
-    res.json({ success: true });
+    const product = await Product.findOne({ code: req.params.code });
+
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    product.stock += qty;
+    await product.save();
+
+    res.json({ success: true, message: "Stock increased successfully" });
 
   } catch (err) {
     res.status(500).json({ error: "Server error" });
@@ -76,19 +99,74 @@ router.put("/increase/:code", async (req, res) => {
 });
 
 
-// ➖ REDUCE STOCK
+// ➖ REDUCE STOCK (SAFE)
+// ➖ REDUCE STOCK (SAFE + VALIDATION)
 router.put("/reduce/:code", async (req, res) => {
   try {
-    await Product.updateOne(
-      { code: req.params.code },
-      { $inc: { stock: -Number(req.body.qty) } }
-    );
+    const qty = Number(req.body.qty);
 
-    res.json({ success: true });
+    const product = await Product.findOne({ code: req.params.code });
+
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    if (product.stock === 0) {
+      return res.status(400).json({ error: "Out of Stock" });
+    }
+
+    if (qty > product.stock) {
+      return res.status(400).json({
+        error: "Items exceeded than availability"
+      });
+    }
+
+    product.stock -= qty;
+    await product.save();
+
+    if (product.stock === 0) {
+      return res.json({
+        success: true,
+        message: "Stock reduced. Product is now Out of Stock"
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Stock reduced successfully"
+    });
 
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }
 });
+
+// ❌ DELETE PRODUCT (WITH IMAGE DELETE)
+router.delete("/delete/:code", async (req, res) => {
+  try {
+    const product = await Product.findOne({ code: req.params.code });
+
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    // Delete image from uploads folder
+    if (product.image) {
+      const imagePath = path.join(__dirname, "../uploads/", product.image);
+
+      if (fs.existsSync(imagePath)) {
+        fs.unlinkSync(imagePath);
+      }
+    }
+
+    await Product.deleteOne({ code: req.params.code });
+
+    res.json({ success: true, message: "Product deleted successfully" });
+
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 
 module.exports = router;
