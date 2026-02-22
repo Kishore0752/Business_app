@@ -1,10 +1,32 @@
 const express = require("express");
 const Product = require("../models/Product");
+const Admin = require("../models/Admin");
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
 
 const router = express.Router();
+
+// ✅ Middleware: Verify admin passcode from header
+const verifyAdmin = async (req, res, next) => {
+  try {
+    const passcode = req.headers["x-admin-passcode"]?.trim();
+
+    if (!passcode) {
+      return res.status(401).json({ error: "Admin passcode required (header: x-admin-passcode)" });
+    }
+
+    const admin = await Admin.findOne({ passcode });
+
+    if (!admin) {
+      return res.status(403).json({ error: "Invalid admin passcode" });
+    }
+
+    next();
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+};
 
 
 // ☁ Cloudinary config
@@ -77,42 +99,48 @@ router.get("/:code", async (req, res) => {
 });
 
 
-// ➕ INCREASE STOCK
+// ➕ INCREASE STOCK (Atomic)
 router.put("/increase/:code", async (req, res) => {
   try {
     const qty = Number(req.body.qty);
     if (!qty || qty <= 0) return res.status(400).json({ error: "Invalid quantity" });
 
-    const product = await Product.findOne({ code: req.params.code });
-    if (!product) return res.status(404).json({ error: "Product not found" });
+    // ✅ Atomic conditional update using $inc operator
+    const updated = await Product.findOneAndUpdate(
+      { code: req.params.code },
+      { $inc: { stock: qty } },
+      { new: true }
+    );
 
-    product.stock += qty;
-    await product.save();
+    if (!updated) {
+      return res.status(404).json({ error: "Product not found" });
+    }
 
-    res.json({ success: true, message: "Stock increased" });
+    res.json({ success: true, message: "Stock increased", product: updated });
   } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
 
 
-// ➖ REDUCE STOCK
+// ➖ REDUCE STOCK (atomic, prevents negative stock)
 router.put("/reduce/:code", async (req, res) => {
   try {
     const qty = Number(req.body.qty);
     if (!qty || qty <= 0) return res.status(400).json({ error: "Invalid quantity" });
 
-    const product = await Product.findOne({ code: req.params.code });
-    if (!product) return res.status(404).json({ error: "Product not found" });
+    // ✅ Atomic conditional update: only reduce if stock >= qty
+    const updated = await Product.findOneAndUpdate(
+      { code: req.params.code, stock: { $gte: qty } },
+      { $inc: { stock: -qty } },
+      { new: true }
+    );
 
-    if (qty > product.stock) {
-      return res.status(400).json({ error: "Not enough stock" });
+    if (!updated) {
+      return res.status(404).json({ error: "Product not found or insufficient stock" });
     }
 
-    product.stock -= qty;
-    await product.save();
-
-    res.json({ success: true, product });
+    res.json({ success: true, message: "Stock reduced", product: updated });
 
   } catch {
     res.status(500).json({ error: "Server error" });
@@ -120,11 +148,34 @@ router.put("/reduce/:code", async (req, res) => {
 });
 
 
-// ❌ DELETE PRODUCT (image remains in cloud — optional cleanup later)
-router.delete("/delete/:code", async (req, res) => {
+// ❌ DELETE PRODUCT + CLOUDINARY IMAGE (Admin-only)
+router.delete("/delete/:code", verifyAdmin, async (req, res) => {
   try {
+    const product = await Product.findOne({ code: req.params.code });
+
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    // ☁ Delete image from Cloudinary if it exists
+    if (product.image) {
+      try {
+        // Extract public_id from Cloudinary URL
+        // URL format: https://res.cloudinary.com/{cloud_name}/image/upload/v{version}/{folder}/{filename}
+        const urlParts = product.image.split("/");
+        const fileName = urlParts[urlParts.length - 1].split(".")[0];  // filename without extension
+        const publicId = `pos-products/${fileName}`;  // folder/filename
+
+        await cloudinary.uploader.destroy(publicId);
+      } catch (err) {
+        console.warn(`Warning: Failed to delete Cloudinary image for ${product.code}:`, err.message);
+        // Continue with product deletion even if image delete fails
+      }
+    }
+
     await Product.deleteOne({ code: req.params.code });
-    res.json({ success: true });
+    res.json({ success: true, message: "Product and image deleted" });
+
   } catch {
     res.status(500).json({ error: "Server error" });
   }
