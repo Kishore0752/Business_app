@@ -51,6 +51,18 @@ router.post("/add", upload.single("image"), async (req, res) => {
 
 
 // 🔍 SEARCH PRODUCT
+// 🔎 LIST ALL PRODUCTS
+router.get("/", async (req, res) => {
+  try {
+    const products = await Product.find().sort({ name: 1 });
+    res.json(products);
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+// 🔍 SEARCH PRODUCT
 router.get("/:code", async (req, res) => {
   try {
     const product = await Product.findOne({ code: req.params.code });
