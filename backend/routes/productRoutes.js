@@ -51,7 +51,6 @@ router.post("/add", upload.single("image"), async (req, res) => {
 
 
 // 🔍 SEARCH PRODUCT
-// 🔍 SEARCH PRODUCT
 router.get("/:code", async (req, res) => {
   try {
     const product = await Product.findOne({ code: req.params.code });
@@ -77,10 +76,16 @@ router.get("/:code", async (req, res) => {
   }
 });
 
+
 // ➕ INCREASE STOCK
 router.put("/increase/:code", async (req, res) => {
   try {
     const qty = Number(req.body.qty);
+
+    // ✅ Prevent invalid quantity
+    if (!qty || qty <= 0) {
+      return res.status(400).json({ error: "Invalid quantity" });
+    }
 
     const product = await Product.findOne({ code: req.params.code });
 
@@ -99,11 +104,15 @@ router.put("/increase/:code", async (req, res) => {
 });
 
 
-// ➖ REDUCE STOCK (SAFE)
-// ➖ REDUCE STOCK (SAFE + VALIDATION)
+// ➖ REDUCE STOCK (NO NEGATIVE STOCK)
 router.put("/reduce/:code", async (req, res) => {
   try {
     const qty = Number(req.body.qty);
+
+    // ✅ Prevent invalid quantity
+    if (!qty || qty <= 0) {
+      return res.status(400).json({ error: "Invalid quantity" });
+    }
 
     const product = await Product.findOne({ code: req.params.code });
 
@@ -127,7 +136,7 @@ router.put("/reduce/:code", async (req, res) => {
     if (product.stock === 0) {
       return res.json({
         success: true,
-        message: "Stock reduced. Product is now Out of Stock"
+        message: "Out of Stock"
       });
     }
 
@@ -140,6 +149,7 @@ router.put("/reduce/:code", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
 
 // ❌ DELETE PRODUCT (WITH IMAGE DELETE)
 router.delete("/delete/:code", async (req, res) => {
@@ -167,6 +177,5 @@ router.delete("/delete/:code", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-
 
 module.exports = router;
