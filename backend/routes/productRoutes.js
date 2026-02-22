@@ -130,19 +130,29 @@ router.put("/reduce/:code", async (req, res) => {
       });
     }
 
-    product.stock -= qty;
-    await product.save();
+    // Use conditional update to prevent race conditions leading to negative stock
+    const updated = await Product.findOneAndUpdate(
+      { code: req.params.code, stock: { $gte: qty } },
+      { $inc: { stock: -qty } },
+      { new: true }
+    );
 
-    if (product.stock === 0) {
+    if (!updated) {
+      return res.status(400).json({ error: "Insufficient stock or product not found" });
+    }
+
+    if (updated.stock === 0) {
       return res.json({
         success: true,
-        message: "Out of Stock"
+        message: "Out of Stock",
+        product: updated
       });
     }
 
     res.json({
       success: true,
-      message: "Stock reduced successfully"
+      message: "Stock reduced successfully",
+      product: updated
     });
 
   } catch (err) {

@@ -34,17 +34,34 @@ router.post("/", async (req, res) => {
     const newSale = new Sale({ items, grandTotal });
     await newSale.save();
 
-    // 3️⃣ Reduce stock safely
+    // 3️⃣ Reduce stock safely using conditional updates to avoid negative stock.
+    // If any conditional update fails (because stock was reduced concurrently), roll back previous updates and delete the sale.
+    const updatedItems = [];
+
     for (const item of items) {
-      await Product.updateOne(
-        { code: item.code },
-        {
-          $inc: { stock: -Math.min(item.quantity, await Product.findOne({ code: item.code }).then(p => p.stock)) }
-        }
+      const updateResult = await Product.updateOne(
+        { code: item.code, stock: { $gte: item.quantity } },
+        { $inc: { stock: -item.quantity } }
       );
+
+      if (updateResult.modifiedCount === 0) {
+        // rollback previously updated items
+        for (const done of updatedItems) {
+          await Product.updateOne({ code: done.code }, { $inc: { stock: done.quantity } });
+        }
+
+        // delete the saved sale since we couldn't complete the stock updates
+        await Sale.deleteOne({ _id: newSale._id });
+
+        return res.status(400).json({
+          error: `Unable to complete sale. Product ${item.code} does not have sufficient stock anymore.`
+        });
+      }
+
+      updatedItems.push({ code: item.code, quantity: item.quantity });
     }
 
-    res.json({ success: true, message: "Sale completed successfully" });
+    res.json({ success: true, message: "Sale completed successfully", sale: newSale });
 
   } catch (err) {
     res.status(500).json({ error: err.message });
