@@ -1,35 +1,33 @@
 const express = require("express");
 const Product = require("../models/Product");
 const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
+const cloudinary = require("cloudinary").v2;
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
 
 const router = express.Router();
 
 
-// ===== IMAGE STORAGE =====
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/");
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
+// ☁ Cloudinary config
+cloudinary.config({
+  cloud_name: process.env.CLOUD_NAME,
+  api_key: process.env.CLOUD_API_KEY,
+  api_secret: process.env.CLOUD_API_SECRET
+});
+
+
+// 📦 Cloud storage instead of local disk
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: "pos-products",
+    allowed_formats: ["jpg", "jpeg", "png"]
   }
 });
 
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = /jpg|jpeg|png/;
-  const ext = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-  const mime = allowedTypes.test(file.mimetype);
-
-  if (ext && mime) cb(null, true);
-  else cb(new Error("Only JPG, JPEG, PNG images allowed"));
-};
-
-const upload = multer({ storage, fileFilter });
+const upload = multer({ storage });
 
 
-// ➕ ADD PRODUCT
+// ➕ ADD PRODUCT (PERMANENT IMAGE)
 router.post("/add", upload.single("image"), async (req, res) => {
   try {
     const newProduct = new Product({
@@ -37,7 +35,7 @@ router.post("/add", upload.single("image"), async (req, res) => {
       name: req.body.name,
       price: Number(req.body.price),
       stock: Number(req.body.stock),
-      image: req.file ? req.file.filename : null
+      image: req.file ? req.file.path : null   // Cloudinary URL
     });
 
     await newProduct.save();
@@ -50,13 +48,12 @@ router.post("/add", upload.single("image"), async (req, res) => {
 });
 
 
-// 🔍 SEARCH PRODUCT
-// 🔎 LIST ALL PRODUCTS
+// 📋 LIST ALL PRODUCTS
 router.get("/", async (req, res) => {
   try {
     const products = await Product.find().sort({ name: 1 });
     res.json(products);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -67,23 +64,14 @@ router.get("/:code", async (req, res) => {
   try {
     const product = await Product.findOne({ code: req.params.code });
 
-    if (!product) {
-      return res.status(404).json({ error: "Product not found" });
-    }
-
-    if (product.stock === 0) {
-      return res.json({
-        ...product._doc,
-        status: "Out of Stock"
-      });
-    }
+    if (!product) return res.status(404).json({ error: "Product not found" });
 
     res.json({
       ...product._doc,
-      status: "Available"
+      status: product.stock === 0 ? "Out of Stock" : "Available"
     });
 
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -93,109 +81,51 @@ router.get("/:code", async (req, res) => {
 router.put("/increase/:code", async (req, res) => {
   try {
     const qty = Number(req.body.qty);
-
-    // ✅ Prevent invalid quantity
-    if (!qty || qty <= 0) {
-      return res.status(400).json({ error: "Invalid quantity" });
-    }
+    if (!qty || qty <= 0) return res.status(400).json({ error: "Invalid quantity" });
 
     const product = await Product.findOne({ code: req.params.code });
-
-    if (!product) {
-      return res.status(404).json({ error: "Product not found" });
-    }
+    if (!product) return res.status(404).json({ error: "Product not found" });
 
     product.stock += qty;
     await product.save();
 
-    res.json({ success: true, message: "Stock increased successfully" });
-
-  } catch (err) {
+    res.json({ success: true, message: "Stock increased" });
+  } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
 
 
-// ➖ REDUCE STOCK (NO NEGATIVE STOCK)
+// ➖ REDUCE STOCK
 router.put("/reduce/:code", async (req, res) => {
   try {
     const qty = Number(req.body.qty);
-
-    // ✅ Prevent invalid quantity
-    if (!qty || qty <= 0) {
-      return res.status(400).json({ error: "Invalid quantity" });
-    }
+    if (!qty || qty <= 0) return res.status(400).json({ error: "Invalid quantity" });
 
     const product = await Product.findOne({ code: req.params.code });
-
-    if (!product) {
-      return res.status(404).json({ error: "Product not found" });
-    }
-
-    if (product.stock === 0) {
-      return res.status(400).json({ error: "Out of Stock" });
-    }
+    if (!product) return res.status(404).json({ error: "Product not found" });
 
     if (qty > product.stock) {
-      return res.status(400).json({
-        error: "Items exceeded than availability"
-      });
+      return res.status(400).json({ error: "Not enough stock" });
     }
 
-    // Use conditional update to prevent race conditions leading to negative stock
-    const updated = await Product.findOneAndUpdate(
-      { code: req.params.code, stock: { $gte: qty } },
-      { $inc: { stock: -qty } },
-      { new: true }
-    );
+    product.stock -= qty;
+    await product.save();
 
-    if (!updated) {
-      return res.status(400).json({ error: "Insufficient stock or product not found" });
-    }
+    res.json({ success: true, product });
 
-    if (updated.stock === 0) {
-      return res.json({
-        success: true,
-        message: "Out of Stock",
-        product: updated
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Stock reduced successfully",
-      product: updated
-    });
-
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
 
 
-// ❌ DELETE PRODUCT (WITH IMAGE DELETE)
+// ❌ DELETE PRODUCT (image remains in cloud — optional cleanup later)
 router.delete("/delete/:code", async (req, res) => {
   try {
-    const product = await Product.findOne({ code: req.params.code });
-
-    if (!product) {
-      return res.status(404).json({ error: "Product not found" });
-    }
-
-    // Delete image from uploads folder
-    if (product.image) {
-      const imagePath = path.join(__dirname, "../uploads/", product.image);
-
-      if (fs.existsSync(imagePath)) {
-        fs.unlinkSync(imagePath);
-      }
-    }
-
     await Product.deleteOne({ code: req.params.code });
-
-    res.json({ success: true, message: "Product deleted successfully" });
-
-  } catch (err) {
+    res.json({ success: true });
+  } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
